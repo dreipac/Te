@@ -2,7 +2,9 @@
 <html lang="de">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@400;500&display=swap" rel="stylesheet">
 
 <title>Heart Particles</title>
@@ -16,6 +18,7 @@
   html,body{
     height:100%;
     margin:0;
+    background-color:radial-gradient(1200px 800px at 50% 35%, var(--bg3), var(--bg2) 50%, var(--bg1) 100%);
     background: radial-gradient(1200px 800px at 50% 35%, var(--bg3), var(--bg2) 50%, var(--bg1) 100%);
     overflow:hidden;
     color:#ffd3ea;
@@ -23,7 +26,9 @@
   }
   /* Canvas layer stack */
   .stage{
-    position:fixed; inset:0; display:grid; place-items:center;
+    position:fixed; 
+    inset:0; display:grid; 
+    place-items:center;
   }
   canvas{
     position:absolute; inset:0;
@@ -173,10 +178,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ====== Flow-Emitter ======
   const baseHue = 330;
-  const FLOW_SPAWN_RATE = 80;   // Partikel/Sek.
-  const FLOW_SPEED_MIN = 220;    // px/s
+  const FLOW_SPAWN_RATE = 50;   // Partikel/Sek.
+  const FLOW_SPEED_MIN = 150;    // px/s
   const FLOW_SPEED_MAX = 320;    // px/s
-  const FLOW_SPREAD = 1.6;       // seitliche Streuung
+  const FLOW_SPREAD = 1.5;       // seitliche Streuung
   const particles = [];
   let spawnCarry = 0;
 
