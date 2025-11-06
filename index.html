@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@400;500&display=swap" rel="stylesheet">
+
+<title>Heart Particles</title>
+<style>
+  :root{
+    --bg1:#1b001a;
+    --bg2:#30002e;
+    --bg3:#4a0b46;
+    --heart:#ff6fb3;
+  }
+  html,body{
+    height:100%;
+    margin:0;
+    background: radial-gradient(1200px 800px at 50% 35%, var(--bg3), var(--bg2) 50%, var(--bg1) 100%);
+    overflow:hidden;
+    color:#ffd3ea;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  }
+  /* Canvas layer stack */
+  .stage{
+    position:fixed; inset:0; display:grid; place-items:center;
+  }
+  canvas{
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    display:block;
+  }
+
+  /* Text-Layer hebt sich mit Glow besser ab */
+#text { filter: none; }
+
+
+  /* Subtle credit / instruction (can be removed) */
+  .ui{
+    position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    font-size:12px; letter-spacing:.08em; opacity:.55; user-select:none;
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <canvas id="bg"></canvas>     <!-- Hintergrund-Bokeh -->
+    <canvas id="heart"></canvas>  <!-- Großes Herz -->
+    <canvas id="text"></canvas>   <!-- Text aus Herzpunkten -->
+  </div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  // ====== Canvas Setup ======
+  const DPR = Math.min(2, window.devicePixelRatio || 1);
+  const canvases = {
+    bg: document.getElementById('bg'),
+    heart: document.getElementById('heart'),
+    text: document.getElementById('text')
+  };
+  const ctx = {
+    bg: canvases.bg.getContext('2d'),
+    heart: canvases.heart.getContext('2d'),
+    text: canvases.text.getContext('2d')
+  };
+
+  // ====== Globale Geometrie ======
+  const PATH_SAMPLES = 1400;
+  let leftArc = [], rightArc = [];
+  let centerX = 0, centerY = 0, centerScale = 1;
+  let heartBottomY = 0; // <- NEU: Y-Position der Herzspitze (für Text-Placement)
+
+
+  // ====== Utils ======
+  function rand(a,b){ return a + Math.random()*(b-a); }
+  function noise1D(x){ const n = Math.sin(x*12.9898)*43758.5453; return n - Math.floor(n); }
+
+  // kleines Herz
+  function drawTinyHeart(context, x, y, size, fill, alpha=1, glow=8){
+    context.save();
+    context.translate(x, y);
+    context.scale(size, size);
+    context.globalAlpha = alpha;
+    context.fillStyle = fill;
+    context.shadowBlur = glow;
+    context.shadowColor = fill;
+    context.beginPath();
+    context.moveTo(0, 0.35);
+    context.bezierCurveTo(0, -0.15, -0.55, -0.1, -0.55, 0.2);
+    context.bezierCurveTo(-0.55, 0.5, -0.2, 0.65, 0, 0.85);
+    context.bezierCurveTo(0.2, 0.65, 0.55, 0.5, 0.55, 0.2);
+    context.bezierCurveTo(0.55, -0.1, 0, -0.15, 0, 0.35);
+    context.closePath();
+    context.fill();
+    context.restore();
+  }
+
+  // Herzkurve
+  function heartPoint(t){
+    const x = 16*Math.pow(Math.sin(t),3);
+    const y = 13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t);
+    return { x: x/18, y: -y/18 }; // y nach oben positiv
+  }
+
+  // ====== Pfade neu aufbauen ======
+  function rebuildPaths(){
+    const w = canvases.heart.width, h = canvases.heart.height;
+    centerX = w * 0.5;
+    centerY = h * 0.43;
+    centerScale = Math.min(w,h) * 0.5;
+
+    const pts = [];
+    for (let i=0;i<PATH_SAMPLES;i++){
+      const t = -Math.PI + i*(2*Math.PI/(PATH_SAMPLES-1));
+      const p = heartPoint(t);
+      pts.push({t, x: centerX + p.x*centerScale, y: centerY + p.y*centerScale});
+    }
+
+    // Index für Kerbe oben (max y) und Spitze unten (min y)
+    let iTop=0, iBottom=0;
+    for (let i=1;i<pts.length;i++){
+      if (pts[i].y > pts[iTop].y) iTop = i;
+      if (pts[i].y < pts[iBottom].y) iBottom = i;
+    }
+      heartBottomY = pts[iTop].y;
+
+    // Rechtsbogen: im Uhrzeigersinn von oben zur Spitze
+    rightArc = [];
+    for (let i=iTop; i!==iBottom; i=(i+1)%pts.length) rightArc.push(pts[i]);
+    rightArc.push(pts[iBottom]);
+
+    // Linksbogen: gegen den Uhrzeigersinn von oben zur Spitze
+    leftArc = [];
+    for (let i=iTop; i!==iBottom; i=(i-1+pts.length)%pts.length) leftArc.push(pts[i]);
+    leftArc.push(pts[iBottom]);
+  }
+
+  // ====== Resize ======
+  function resize() {
+    const w = window.innerWidth || document.documentElement.clientWidth;
+    const h = window.innerHeight || document.documentElement.clientHeight;
+    [canvases.bg, canvases.heart, canvases.text].forEach((c) => {
+      c.width  = Math.floor(w*DPR);
+      c.height = Math.floor(h*DPR);
+      c.style.width  = w+'px';
+      c.style.height = h+'px';
+    });
+    rebuildPaths();
+    renderText();
+  }
+  window.addEventListener('resize', resize);
+
+  // ====== Hintergrund ======
+  const BG_COUNT = 80;
+  const bgHearts = Array.from({length:BG_COUNT}, () => ({
+    x: Math.random(), y: Math.random(),
+    s: 0.5 + Math.random()*1.8,
+    a: 0.15 + Math.random()*0.4,
+    speed: 0.005 + Math.random()*0.02,
+    drift: (Math.random()*2-1)*0.0007
+  }));
+  function renderBG(){
+    const c = ctx.bg, w = canvases.bg.width, h = canvases.bg.height;
+    c.clearRect(0,0,w,h);
+    for (const p of bgHearts){
+      p.y -= p.speed;
+      p.x += p.drift;
+      if (p.y < -0.05) { p.y = 1.05; p.x = (p.x+Math.random()*0.2)%1; }
+      if (p.x < -0.05) p.x = 1.05;
+      if (p.x >  1.05) p.x = -0.05;
+      drawTinyHeart(c, p.x*w, p.y*h, 6*DPR*p.s, '#ff7fbd', p.a, 10);
+    }
+  }
+
+  // ====== Flow-Emitter ======
+  const baseHue = 330;
+  const FLOW_SPAWN_RATE = 80;   // Partikel/Sek.
+  const FLOW_SPEED_MIN = 220;    // px/s
+  const FLOW_SPEED_MAX = 320;    // px/s
+  const FLOW_SPREAD = 1.6;       // seitliche Streuung
+  const particles = [];
+  let spawnCarry = 0;
+
+  function spawn(dt){
+    const wanted = FLOW_SPAWN_RATE * dt + spawnCarry;
+    let count = Math.floor(wanted);
+    spawnCarry = wanted - count;
+
+    for (let i=0;i<count;i++){
+      const side = Math.random()<0.5 ? 'left' : 'right';
+      const arc = side==='left' ? leftArc : rightArc;
+      if (arc.length<2) break;
+
+      const hue = baseHue + (Math.random()*8-4);
+      particles.push({
+        side,
+        s: 0, idx: 0,
+        speed: rand(FLOW_SPEED_MIN, FLOW_SPEED_MAX),
+        size: 4.5 + Math.random()*3.5,
+        alpha: 0,
+        color: `hsl(${hue}, 100%, 75%)`, // klassische HSL-Syntax
+        glow: 12 + Math.random()*18,
+        ox: Math.random()*1000, oy: Math.random()*1000
+      });
+    }
+  }
+
+  function advanceAndDraw(dt, tms){
+    const c = ctx.heart, w = canvases.heart.width, h = canvases.heart.height;
+    c.clearRect(0,0,w,h);
+
+    for (let i=particles.length-1;i>=0;i--){
+      const p = particles[i];
+      const arc = p.side==='left' ? leftArc : rightArc;
+      if (arc.length<2){ particles.splice(i,1); continue; }
+
+      p.s += p.speed * dt;
+
+      while (p.idx < arc.length-2){
+        const ax = arc[p.idx].x, ay = arc[p.idx].y;
+        const bx = arc[p.idx+1].x, by = arc[p.idx+1].y;
+        const seg = Math.hypot(bx-ax, by-ay);
+        if (p.s > seg){ p.s -= seg; p.idx++; }
+        else break;
+      }
+
+      const atEnd = (p.idx >= arc.length-2);
+      if (atEnd && p.s > 0){
+        p.alpha -= 3*dt;                   // unten ausblenden
+        if (p.alpha <= 0){ particles.splice(i,1); continue; }
+      } else {
+        p.alpha = Math.min(1, p.alpha + 3*dt); // oben einblenden
+      }
+
+      const A = arc[p.idx], B = arc[p.idx+1];
+      const segLen = Math.hypot(B.x-A.x, B.y-A.y) || 1;
+      const u = Math.max(0, Math.min(1, p.s/segLen));
+      let x = A.x + (B.x-A.x)*u;
+      let y = A.y + (B.y-A.y)*u;
+
+      // „lebendiger“ Fluss: Wobble + seitliche Abweichung
+      const nx = noise1D(p.ox + tms*0.0005)-0.5;
+      const ny = noise1D(p.oy + tms*0.0005)-0.5;
+      const dx = (B.x-A.x)/segLen, dy = (B.y-A.y)/segLen;
+      const nxn = -dy, nyn = dx;
+      x += (nx*4*DPR) + nxn * (FLOW_SPREAD * (Math.random()*2-1));
+      y += (ny*4*DPR) + nyn * (FLOW_SPREAD * (Math.random()*2-1));
+
+      drawTinyHeart(c, x, y, (30*p.size*DPR)/24, p.color, Math.max(0, Math.min(1, p.alpha)), p.glow);
+    }
+  }
+
+    // ====== Text ======
+  const TEXT = "TE DUA ZEMRA JEM";
+
+  function renderText(tms = 0){
+    const c = ctx.text, w = canvases.text.width, h = canvases.text.height;
+    c.clearRect(0, 0, w, h);
+
+    // responsive Schriftgröße (gut lesbar, aber nicht zu aufdringlich)
+    const base = Math.min(w, h);
+    const fontPx = Math.max(24 * DPR, Math.min(base * 0.065, 58 * DPR));
+
+    c.save();
+    c.textAlign = "center";
+    c.textBaseline = "middle";
+    c.font = `600 ${fontPx}px "Dancing Script", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial`;
+
+    // Position etwas unterhalb der Herzspitze
+    const cx = w * 0.5;
+    const margin = Math.max(28 * DPR, h * 0.05);
+    const y = Math.min(h - margin, heartBottomY + Math.max(70 * DPR, h * 0.1));
+
+    // sanfter, dunklerer Verlauf – passt besser ins Violett
+    const grad = c.createLinearGradient(cx - base * 0.25, 0, cx + base * 0.25, 0);
+    grad.addColorStop(0.0, "#d26aa0");
+    grad.addColorStop(0.5, "#b64c88");
+    grad.addColorStop(1.0, "#d26aa0");
+
+    // dezenter Glow
+    c.shadowBlur = 10 * DPR;
+    c.shadowColor = "rgba(255, 100, 170, 0.5)";
+    c.fillStyle = grad;
+    c.fillText(TEXT, cx, y);
+
+    // leichte Kontur für bessere Lesbarkeit
+    c.lineWidth = Math.max(1 * DPR, fontPx * 0.03);
+    c.strokeStyle = "rgba(255, 200, 230, 0.3)";
+    c.strokeText(TEXT, cx, y);
+
+    // optional: sanfter Schimmer, aber zurückhaltend
+    const t = (tms * 0.001) % 1;
+    const hiStart = Math.max(0, Math.min(1, t));
+    const hiEnd = Math.min(1, hiStart + 0.10);
+    const hiGrad = c.createLinearGradient(cx - base * 0.25, 0, cx + base * 0.25, 0);
+    hiGrad.addColorStop(0, "rgba(255,255,255,0)");
+    hiGrad.addColorStop(hiStart, "rgba(255,255,255,0)");
+    hiGrad.addColorStop((hiStart + hiEnd) / 2, "rgba(255,255,255,0.25)");
+    hiGrad.addColorStop(hiEnd, "rgba(255,255,255,0)");
+    hiGrad.addColorStop(1, "rgba(255,255,255,0)");
+
+    c.globalCompositeOperation = "lighter";
+    c.shadowBlur = 8 * DPR;
+    c.shadowColor = "rgba(255,255,255,0.3)";
+    c.fillStyle = hiGrad;
+    c.fillText(TEXT, cx, y);
+
+    c.restore();
+  }
+
+
+
+
+  // ====== Loop ======
+  let lastTs = performance.now();
+  function loop(ts){
+    const dt = Math.min(0.05, (ts - lastTs)/1000);
+    renderBG();
+    spawn(dt);
+    advanceAndDraw(dt, ts);
+    renderText(ts); // <- NEU: Text mit animiertem Shimmer
+    lastTs = ts;
+    requestAnimationFrame(loop);
+  }
+
+
+  // Start
+  resize();
+  requestAnimationFrame(loop);
+});
+</script>
+
+
+
+</body>
+</html>
