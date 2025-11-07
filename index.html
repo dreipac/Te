@@ -192,6 +192,87 @@ function updateAndDrawTouches(dt){
   }
 }
 
+// ====== Zwei-Finger-Geste: "Du & Ich"-Herzen (NEU) ======
+const duoPairs = [];    // laufende Duo-Animationen
+let lastDuoAt = 0;
+const MIN_DUO_GAP_MS = 900;
+
+function easeInOut(t){ return t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+function lerp(a,b,t){ return a + (b-a)*t; }
+
+// kleine Hilfsfunktion: Herz entlang einfacher Quadratic-Bezier
+function bezier2(P0, P1, P2, t){
+  const u = (1-t), uu = u*u, tt = t*t;
+  return {
+    x: uu*P0.x + 2*u*t*P1.x + tt*P2.x,
+    y: uu*P0.y + 2*u*t*P1.y + tt*P2.y
+  };
+}
+
+function startDuo(x1, y1, x2, y2){
+  const now = performance.now();
+  if (now - lastDuoAt < MIN_DUO_GAP_MS) return; // Cooldown
+  lastDuoAt = now;
+
+  // Mitte + leichte Bogenkontrolle (schöne Annäherung, kein Geradeaus)
+  const mid = { x:(x1+x2)/2, y:(y1+y2)/2 };
+  const dx = x2 - x1, dy = y2 - y1;
+  // Kontrollpunkte seitlich versetzt (orthogonal), abhängig vom Abstand
+  const len = Math.hypot(dx,dy) || 1;
+  const ox = -dy/len, oy = dx/len;
+  const bow = Math.min(60*DPR, len*0.25); // Stärke der Krümmung
+
+  const A = { x:x1, y:y1 };
+  const B = { x:x2, y:y2 };
+  const C1 = { x: lerp(x1, mid.x, 0.5) + ox*bow, y: lerp(y1, mid.y, 0.5) + oy*bow };
+  const C2 = { x: lerp(x2, mid.x, 0.5) - ox*bow, y: lerp(y2, mid.y, 0.5) - oy*bow };
+
+  duoPairs.push({
+    t: 0, dur: 1.25, // Sekunden
+    A, B, C1, C2,
+    mid,
+    sizeA: 22*DPR + Math.random()*6*DPR,
+    sizeB: 22*DPR + Math.random()*6*DPR,
+    colorA: '#ff7fbd',
+    colorB: '#ffc4de',
+    glow: 22
+  });
+}
+
+function updateAndDrawDuo(dt){
+  const c = ctx.heart;
+
+  for(let i=duoPairs.length-1; i>=0; i--){
+    const d = duoPairs[i];
+    d.t += dt;
+    const k = easeInOut(Math.min(1, d.t/d.dur));
+
+    // Positionen entlang je eines Bezier-Bogens Richtung Mitte
+    const Pleft  = bezier2(d.A, d.C1, d.mid, k);
+    const Pright = bezier2(d.B, d.C2, d.mid, k);
+
+    // dezentes Pulsieren
+    const pulse = 1 + Math.sin(d.t*4)*0.06;
+
+    // Alpha: weich ein- und am Ende leicht stärker, dann zum Merge
+    const alpha = k<0.9 ? 0.8 : lerp(0.8, 1.0, (k-0.9)/0.1);
+
+    drawTinyHeart(c, Pleft.x,  Pleft.y,  d.sizeA*pulse, d.colorA, alpha, d.glow);
+    drawTinyHeart(c, Pright.x, Pright.y, d.sizeB*pulse, d.colorB, alpha, d.glow);
+
+    // Merge-Moment
+    if (k >= 1){
+      // kurzer „Aufglüh“-Burst an der Mitte
+      spawnBurst(d.mid.x, d.mid.y, 1.6);
+      // sanfter Doppel-Glow
+      drawTinyHeart(c, d.mid.x, d.mid.y, 34*DPR, '#ffd0e6', 0.85, 30);
+      // optional: haptisches Feedback
+      if (navigator.vibrate) { try { navigator.vibrate(12); } catch {} }
+      duoPairs.splice(i,1);
+    }
+  }
+}
+
 
   // ====== Pfade neu aufbauen ======
   function rebuildPaths(){
@@ -249,7 +330,15 @@ inputTarget.addEventListener('pointerdown', (e) => {
   spawnBurst(x, y, 1);
   pointerStates.set(e.pointerId, { lastX:x, lastY:y, lastT: performance.now() });
   try { inputTarget.setPointerCapture(e.pointerId); } catch {}
+
+  // >>> NEU: Wenn jetzt genau ZWEI Finger aktiv sind -> Duo starten
+  if (pointerStates.size === 2){
+    const pts = Array.from(pointerStates.values());
+    // nimm die beiden aktiven Touch-Positionen
+    startDuo(pts[0].lastX, pts[0].lastY, pts[1].lastX, pts[1].lastY);
+  }
 }, {passive:false});
+
 
 inputTarget.addEventListener('pointermove', (e) => {
   if(!pointerStates.has(e.pointerId)) return;
@@ -447,6 +536,7 @@ function advanceAndDraw(dt){
     spawn(dt);
     advanceAndDraw(dt);
     updateAndDrawTouches(dt); // <- NEU: Touch-Effekte über dem Herz-Emitter
+    updateAndDrawDuo(dt);   // <- NEU: Zwei-Finger-Geste animieren
 
     renderText(ts); // <- NEU: Text mit animiertem Shimmer
     lastTs = ts;
