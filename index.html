@@ -106,6 +106,90 @@ document.addEventListener('DOMContentLoaded', () => {
     return { x: x/18, y: -y/18 }; // y nach oben positiv
   }
 
+  // ====== Touch Effects (NEU) ======
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+function clientToCanvas(clientX, clientY){
+  // CSS-Size = Fenstergröße; wir skalieren mit DPR auf Canvas-Pixel
+  const rect = canvases.heart.getBoundingClientRect();
+  const x = (clientX - rect.left) * DPR;
+  const y = (clientY - rect.top)  * DPR;
+  return {x,y};
+}
+
+const touchBursts = [];     // kurzlebige „Puff“-Partikel beim Tippen
+const touchTrails = [];     // Mini-Herzen entlang der Finger-Spur
+const pointerStates = new Map(); // per Pointer-ID: {lastX,lastY,lastT}
+
+function spawnBurst(x, y, intensity = 1){
+  const n = Math.floor(18*intensity + Math.random()*14);
+  for(let i=0;i<n;i++){
+    const ang = Math.random()*Math.PI*2;
+    const spd = 90 + Math.random()*220;
+    touchBursts.push({
+      x, y,
+      vx: Math.cos(ang)*spd,
+      vy: Math.sin(ang)*spd*0.7 - 60, // leichter „Schwung“ nach oben
+      life: 0.85 + Math.random()*0.6,
+      age: 0,
+      size: 6*DPR + Math.random()*8*DPR,
+      spin: (Math.random()*2-1)*2.2,
+      color: Math.random() < 0.5 ? '#ff7fbd' : '#ff8ecb',
+      glow: 12 + Math.random()*16
+    });
+  }
+}
+
+function spawnTrailSegment(x0, y0, x1, y1){
+  const dx = x1-x0, dy = y1-y0;
+  const dist = Math.hypot(dx,dy);
+  const step = 18*DPR; // Abstand der Spur-Herzen
+  const steps = Math.max(1, Math.floor(dist/step));
+  for(let i=0;i<steps;i++){
+    const t = i/steps;
+    const x = x0 + dx*t + rand(-2,2)*DPR*0.6;
+    const y = y0 + dy*t + rand(-2,2)*DPR*0.6;
+    touchTrails.push({
+      x, y,
+      life: 0.9, age: 0,
+      size: 4.5*DPR + Math.random()*3*DPR,
+      color: Math.random()<0.7 ? '#ff7fbd' : '#ffc4de',
+      glow: 10 + Math.random()*12
+    });
+  }
+}
+
+function updateAndDrawTouches(dt){
+  const c = ctx.heart;
+
+  // Bursts
+  for(let i=touchBursts.length-1;i>=0;i--){
+    const p = touchBursts[i];
+    p.age += dt;
+    if(p.age >= p.life){ touchBursts.splice(i,1); continue; }
+
+    // Bewegung: sanfter Luftwiderstand + minimale „Schwerkraft“ nach oben
+    p.vx *= 0.985; 
+    p.vy = p.vy*0.985 - 12*dt;
+
+    p.x += p.vx*dt;
+    p.y += p.vy*dt;
+
+    const a = clamp(1 - p.age/p.life, 0, 1);
+    drawTinyHeart(c, p.x, p.y, p.size, p.color, a, p.glow);
+  }
+
+  // Trails
+  for(let i=touchTrails.length-1;i>=0;i--){
+    const p = touchTrails[i];
+    p.age += dt;
+    if(p.age >= p.life){ touchTrails.splice(i,1); continue; }
+    const a = clamp(1 - p.age/p.life, 0, 1);
+    drawTinyHeart(c, p.x, p.y, p.size, p.color, a, p.glow);
+  }
+}
+
+
   // ====== Pfade neu aufbauen ======
   function rebuildPaths(){
     const w = canvases.heart.width, h = canvases.heart.height;
@@ -154,6 +238,38 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   window.addEventListener('resize', resize);
 
+// ====== Touch/Pointer Events (NEU) ======
+const inputTarget = canvases.text; // oberste Ebene – fängt die Interaktion ab
+
+inputTarget.addEventListener('pointerdown', (e) => {
+  const {x,y} = clientToCanvas(e.clientX, e.clientY);
+  spawnBurst(x, y, 1);
+  pointerStates.set(e.pointerId, { lastX:x, lastY:y, lastT: performance.now() });
+  try { inputTarget.setPointerCapture(e.pointerId); } catch {}
+}, {passive:false});
+
+inputTarget.addEventListener('pointermove', (e) => {
+  if(!pointerStates.has(e.pointerId)) return;
+  const st = pointerStates.get(e.pointerId);
+  const now = performance.now();
+  const {x,y} = clientToCanvas(e.clientX, e.clientY);
+  // Rate-Limit für Trail (ca. alle ~22ms)
+  if(now - st.lastT > 22){
+    spawnTrailSegment(st.lastX, st.lastY, x, y);
+    st.lastX = x; st.lastY = y; st.lastT = now;
+  }
+  e.preventDefault(); // verhindert ungewolltes Scrollen beim Ziehen
+}, {passive:false});
+
+function endPointer(e){
+  if(pointerStates.has(e.pointerId)){
+    pointerStates.delete(e.pointerId);
+    try { inputTarget.releasePointerCapture(e.pointerId); } catch {}
+  }
+}
+inputTarget.addEventListener('pointerup', endPointer, {passive:true});
+inputTarget.addEventListener('pointercancel', endPointer, {passive:true});
+
   // ====== Hintergrund ======
   const BG_COUNT = 80;
   const bgHearts = Array.from({length:BG_COUNT}, () => ({
@@ -176,83 +292,88 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ====== Flow-Emitter ======
-  const baseHue = 330;
-  const FLOW_SPAWN_RATE = 50;   // Partikel/Sek.
-  const FLOW_SPEED_MIN = 150;    // px/s
-  const FLOW_SPEED_MAX = 320;    // px/s
-  const FLOW_SPREAD = 1.5;       // seitliche Streuung
-  const particles = [];
-  let spawnCarry = 0;
+  // ====== Flow-Emitter (wie index.html – stabile Lanes) ======
+const LANES = [-1, 0, 1];            // drei Reihen
+const LANE_SPACING = 2.2 * DPR;      // Abstand von der Randlinie (in px)
+const FLOW_RATE = 46;                 // Partikel/Sek
+const SPEED_MIN = 110, SPEED_MAX = 220; // ruhiger
+const particles = [];
+let spawnCarry = 0;
+const baseHue = 330;
 
-  function spawn(dt){
-    const wanted = FLOW_SPAWN_RATE * dt + spawnCarry;
-    let count = Math.floor(wanted);
-    spawnCarry = wanted - count;
+function spawn(dt){
+  const want = FLOW_RATE*dt + spawnCarry;
+  let n = Math.floor(want);
+  spawnCarry = want - n;
 
-    for (let i=0;i<count;i++){
-      const side = Math.random()<0.5 ? 'left' : 'right';
-      const arc = side==='left' ? leftArc : rightArc;
-      if (arc.length<2) break;
+  for(let i=0; i<n; i++){
+    const side = Math.random()<0.5 ? 'left' : 'right';
+    const arc = side==='left' ? leftArc : rightArc;
+    if(arc.length < 2) break;
 
-      const hue = baseHue + (Math.random()*8-4);
-      particles.push({
-        side,
-        s: 0, idx: 0,
-        speed: rand(FLOW_SPEED_MIN, FLOW_SPEED_MAX),
-        size: 4.5 + Math.random()*3.5,
-        alpha: 0,
-        color: `hsl(${hue}, 100%, 75%)`, // klassische HSL-Syntax
-        glow: 12 + Math.random()*18,
-        ox: Math.random()*1000, oy: Math.random()*1000
-      });
-    }
+    const lane = LANES[Math.floor(Math.random()*LANES.length)]; // -1, 0, 1
+    const hue = baseHue + (Math.random()*6 - 3);
+
+    particles.push({
+      side, idx:0, s:0, lane,
+      speed: SPEED_MIN + Math.random()*(SPEED_MAX - SPEED_MIN),
+      size: 4.4 + Math.random()*3.2,
+      alpha: 0,
+      color: `hsl(${hue},100%,76%)`,
+      glow: 14 + Math.random()*16
+    });
   }
+}
 
-  function advanceAndDraw(dt, tms){
-    const c = ctx.heart, w = canvases.heart.width, h = canvases.heart.height;
-    c.clearRect(0,0,w,h);
+function advanceAndDraw(dt){
+  const c = ctx.heart, w = canvases.heart.width, h = canvases.heart.height;
+  c.clearRect(0,0,w,h);
 
-    for (let i=particles.length-1;i>=0;i--){
-      const p = particles[i];
-      const arc = p.side==='left' ? leftArc : rightArc;
-      if (arc.length<2){ particles.splice(i,1); continue; }
+  for(let i=particles.length-1; i>=0; i--){
+    const p = particles[i];
+    const arc = p.side==='left' ? leftArc : rightArc;
+    if(arc.length < 2){ particles.splice(i,1); continue; }
 
-      p.s += p.speed * dt;
-
-      while (p.idx < arc.length-2){
-        const ax = arc[p.idx].x, ay = arc[p.idx].y;
-        const bx = arc[p.idx+1].x, by = arc[p.idx+1].y;
-        const seg = Math.hypot(bx-ax, by-ay);
-        if (p.s > seg){ p.s -= seg; p.idx++; }
-        else break;
-      }
-
-      const atEnd = (p.idx >= arc.length-2);
-      if (atEnd && p.s > 0){
-        p.alpha -= 3*dt;                   // unten ausblenden
-        if (p.alpha <= 0){ particles.splice(i,1); continue; }
-      } else {
-        p.alpha = Math.min(1, p.alpha + 3*dt); // oben einblenden
-      }
-
-      const A = arc[p.idx], B = arc[p.idx+1];
-      const segLen = Math.hypot(B.x-A.x, B.y-A.y) || 1;
-      const u = Math.max(0, Math.min(1, p.s/segLen));
-      let x = A.x + (B.x-A.x)*u;
-      let y = A.y + (B.y-A.y)*u;
-
-      // „lebendiger“ Fluss: Wobble + seitliche Abweichung
-      const nx = noise1D(p.ox + tms*0.0005)-0.5;
-      const ny = noise1D(p.oy + tms*0.0005)-0.5;
-      const dx = (B.x-A.x)/segLen, dy = (B.y-A.y)/segLen;
-      const nxn = -dy, nyn = dx;
-      x += (nx*4*DPR) + nxn * (FLOW_SPREAD * (Math.random()*2-1));
-      y += (ny*4*DPR) + nyn * (FLOW_SPREAD * (Math.random()*2-1));
-
-      drawTinyHeart(c, x, y, (30*p.size*DPR)/24, p.color, Math.max(0, Math.min(1, p.alpha)), p.glow);
+    // Wegstrecke voran
+    p.s += p.speed*dt;
+    while(p.idx < arc.length-2){
+      const ax = arc[p.idx].x, ay = arc[p.idx].y;
+      const bx = arc[p.idx+1].x, by = arc[p.idx+1].y;
+      const seg = Math.hypot(bx-ax, by-ay);
+      if(p.s > seg){ p.s -= seg; p.idx++; }
+      else break;
     }
+
+    // Ein-/Ausblenden
+    const atEnd = p.idx >= arc.length-2;
+    if(atEnd && p.s>0){
+      p.alpha -= 2.2*dt;
+      if(p.alpha <= 0){ particles.splice(i,1); continue; }
+    }else{
+      p.alpha = Math.min(1, p.alpha + 2.4*dt);
+    }
+
+    // Position auf Segment
+    const A = arc[p.idx], B = arc[p.idx+1];
+    const segLen = Math.hypot(B.x-A.x, B.y-A.y) || 1;
+    const u = Math.max(0, Math.min(1, p.s/segLen));
+    let x = A.x + (B.x-A.x)*u;
+    let y = A.y + (B.y-A.y)*u;
+
+    // Normale + fester Lane-Versatz => stabile Reihen (kein Wobble)
+    const nx = (A.y - B.y)/segLen, ny = (B.x - A.x)/segLen;
+    x += nx * (p.lane * LANE_SPACING);
+    y += ny * (p.lane * LANE_SPACING);
+
+    // ganz leichter, glatter Hauch (zitternfrei)
+    x += Math.sin((p.idx+u)*0.02) * 0.4 * DPR;
+    y += Math.cos((p.idx+u)*0.02) * 0.4 * DPR;
+
+    // gleiche Herzchen wie im Rest der Datei
+    drawTinyHeart(c, x, y, (30*p.size*DPR)/24, p.color, Math.max(0, Math.min(1, p.alpha)), p.glow);
   }
+}
+
 
     // ====== Text ======
   const TEXT = "TE DUA ZEMRA JEM";
@@ -321,7 +442,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const dt = Math.min(0.05, (ts - lastTs)/1000);
     renderBG();
     spawn(dt);
-    advanceAndDraw(dt, ts);
+    advanceAndDraw(dt);
+    updateAndDrawTouches(dt); // <- NEU: Touch-Effekte über dem Herz-Emitter
+
     renderText(ts); // <- NEU: Text mit animiertem Shimmer
     lastTs = ts;
     requestAnimationFrame(loop);
